@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Janela local com apenas comandos de recuperação definidos no Rust. Sem filesystem ou shell expostos ao frontend.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,58 @@
+name: Verify Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+      - name: Build helper tests
+        run: python -m unittest discover -s tests -v
+      - name: Install frontend dependencies
+        run: npm ci --prefix ui
+      - name: Frontend tests
+        run: npm test --prefix ui
+      - name: Compile frontend
+        run: npm run build --prefix ui
+      - name: Core formatting
+        run: cargo fmt --manifest-path core/Cargo.toml -- --check
+      - name: Core lint
+        run: cargo clippy --manifest-path core/Cargo.toml --locked -- -D warnings
+      - name: Core tests (no Office or external fixtures)
+        run: cargo test --manifest-path core/Cargo.toml --locked
+      - name: Desktop tests
+        run: cargo test --manifest-path desktop/Cargo.toml --locked
+      - name: Release build
+        run: cargo build --release --manifest-path desktop/Cargo.toml --locked
+      - name: Compute executable checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash desktop/target/release/vba8.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  vba8.exe" | Set-Content -Encoding ascii desktop/target/release/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vba8-windows-x64-unsigned
+          path: |
+            desktop/target/release/vba8.exe
+            desktop/target/release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14

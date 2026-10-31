@@ -1,0 +1,83 @@
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { invoke } from '@tauri-apps/api/core';
+import App from './App';
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+const mockInvoke = vi.mocked(invoke);
+const selected = { path: 'C:\\Planilhas\\Orçamento.xlsm', inspection: { status: 'protected', can_recover: true, warnings: [] } };
+beforeEach(() => { mockInvoke.mockReset(); });
+it('abre e fecha o diálogo de instruções com tecla Escape', async () => {
+  const user = userEvent.setup(); render(<App />);
+  const instructionsBtn = screen.getByRole('button', { name: /instruções/i });
+  expect(instructionsBtn).toBeVisible();
+  await user.click(instructionsBtn);
+  const dialog = screen.getByRole('dialog', { name: /instruções vba/i });
+  expect(dialog).toBeVisible();
+  expect(screen.getByText(/ferramentas > propriedades do vbaproject/i)).toBeVisible();
+  expect(screen.getByText(/dpb->dpx/i)).toBeVisible();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog', { name: /instruções vba/i })).not.toBeInTheDocument();
+});
+it('bloqueia concorrência durante inspeção e limpa seleção ao cancelar nova abertura', async () => {
+  let resolve!: (v: typeof selected | null) => void;
+  mockInvoke.mockResolvedValueOnce(selected).mockImplementationOnce(() => new Promise(r => { resolve = r as typeof resolve; }));
+  const user = userEvent.setup(); render(<App />);
+  await user.click(screen.getByRole('button', { name: /selecionar arquivo/i }));
+  await user.click(screen.getByRole('checkbox'));
+  await user.click(screen.getByRole('button', { name: /selecionar arquivo/i }));
+  expect(screen.getByRole('button', { name: /selecionar arquivo/i })).toBeDisabled();
+  expect(screen.getByRole('button', { name: /gerar cópia/i })).toBeDisabled();
+  expect(screen.queryByText('Orçamento.xlsm')).not.toBeInTheDocument();
+  resolve(null);
+  await waitFor(() => expect(screen.getByRole('button', { name: /selecionar arquivo/i })).toBeEnabled());
+  expect(screen.getByRole('checkbox')).not.toBeChecked();
+});
+it('cancelar salvar não anuncia sucesso e permite tentar novamente', async () => {
+  mockInvoke.mockResolvedValueOnce(selected).mockResolvedValueOnce(null);
+  const user = userEvent.setup(); render(<App />);
+  await user.click(screen.getByRole('button', { name: /selecionar arquivo/i }));
+  await user.click(screen.getByRole('checkbox'));
+  await user.click(screen.getByRole('button', { name: /gerar cópia/i }));
+  expect(await screen.findByText(/salvamento cancelado/i)).toBeVisible();
+  expect(screen.queryByText('Cópia gerada e verificada')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /gerar cópia/i })).toBeEnabled();
+});
+it('erro nativo é recuperável sem produzir falso sucesso', async () => {
+  mockInvoke.mockRejectedValueOnce(new Error("Cannot read properties of undefined (reading 'invoke')")).mockResolvedValueOnce(selected);
+  const user = userEvent.setup(); render(<App />);
+  await user.click(screen.getByRole('button', { name: /selecionar arquivo/i }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(/aplicativo desktop/i);
+  await user.click(screen.getByRole('button', { name: /selecionar arquivo/i }));
+  expect(await screen.findByText('Orçamento.xlsm')).toBeVisible();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+it('gera via salvar nativo e apresenta validação Excel pendente, não senha removida', async () => {
+  mockInvoke.mockResolvedValueOnce(selected).mockResolvedValueOnce({ output: 'C:\\Cópias\\Orçamento-recuperado.xlsm', report: { status: 'recovered', verified: true, warnings: ['Validar no Excel.'] } });
+  const user = userEvent.setup(); render(<App />);
+  await user.click(screen.getByRole('button', { name: /selecionar arquivo/i }));
+  await user.click(screen.getByRole('checkbox'));
+  await user.click(screen.getByRole('button', { name: /gerar cópia/i }));
+  expect(mockInvoke).toHaveBeenLastCalledWith('recover_selected', { source: selected.path });
+  expect(await screen.findByText('Cópia gerada e verificada')).toBeVisible();
+  expect(screen.getByText(/validação no excel pendente/i)).toBeVisible();
+  expect(screen.queryByText(/senha removida/i)).not.toBeInTheDocument();
+});
+it('respeita can_recover false mesmo com status protected', async () => {
+  mockInvoke.mockResolvedValueOnce({ ...selected, inspection: { status: 'protected', can_recover: false } });
+  const user = userEvent.setup(); render(<App />);
+  await user.click(screen.getByRole('button', { name: /selecionar arquivo/i }));
+  await user.click(screen.getByRole('checkbox'));
+  expect(screen.getByRole('button', { name: /gerar cópia/i })).toBeDisabled();
+});
+it('seleciona pelo diálogo nativo e exige autorização antes de gerar', async () => {
+  mockInvoke.mockResolvedValueOnce(selected);
+  const user = userEvent.setup(); render(<App />);
+  const generate = screen.getByRole('button', { name: /gerar cópia/i });
+  expect(generate).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: /selecionar arquivo/i }));
+  expect(mockInvoke).toHaveBeenCalledWith('select_source');
+  expect(await screen.findByText('Orçamento.xlsm')).toBeVisible();
+  expect(generate).toBeDisabled();
+  await user.click(screen.getByRole('checkbox'));
+  expect(generate).toBeEnabled();
+});
